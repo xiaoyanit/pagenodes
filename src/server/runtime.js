@@ -1503,6 +1503,48 @@ function connectMcp(options, _callerPeer) {
         return { success: true, nodeCount: count };
       });
 
+      // Custom tools handlers
+      mcpPeer.addHandler('getCustomTools', () => {
+        const tools = [];
+        if (globalThis._customTools) {
+          for (const [name, tool] of globalThis._customTools) {
+            tools.push({
+              name,
+              description: tool.description
+            });
+          }
+        }
+        return { tools };
+      });
+
+      mcpPeer.addHandler('useCustomTool', (name, message) => {
+        return new Promise((resolve) => {
+          const tool = globalThis._customTools?.get(name);
+          if (!tool) {
+            resolve({ error: `Custom tool "${name}" not found` });
+            return;
+          }
+
+          // Generate a unique request ID
+          const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+          // Set up timeout (30 seconds)
+          const timeout = setTimeout(() => {
+            globalThis._customToolRequests?.delete(requestId);
+            resolve({ error: `Tool "${name}" timed out after 30 seconds` });
+          }, 30000);
+
+          // Store the pending request
+          if (!globalThis._customToolRequests) {
+            globalThis._customToolRequests = new Map();
+          }
+          globalThis._customToolRequests.set(requestId, { resolve, timeout });
+
+          // Invoke the tool (triggers the flow with the message)
+          tool.node.invoke(message, requestId);
+        });
+      });
+
       // Register this device with the MCP bridge
       const nodeCatalog = runtimeRegistry.getAll().map(def => ({
         type: def.type,

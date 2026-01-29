@@ -112,6 +112,8 @@ import { imageAiConfigNode, imageAiNode } from './ai/image-ai.jsx';
 import { llmConfigNode, llmNode } from './ai/llm.jsx';
 import { mcpOutputNode } from './ai/mcp-output.jsx';
 import { mcpInputNode } from './ai/mcp-input.jsx';
+import { toolInNode } from './ai/custom-tool.jsx';
+import { toolOutNode } from './ai/custom-out.jsx';
 
 // Output nodes
 import { canvasConfigNode, canvasNode } from './output/canvas.jsx';
@@ -224,6 +226,8 @@ import { audioStemsNode } from './audio/stems.jsx';
   llmNode,
   mcpOutputNode,
   mcpInputNode,
+  toolInNode,
+  toolOutNode,
 
   // Output
   canvasNode,

@@ -79,6 +79,8 @@ import { hsyncConnectionRuntime, hsyncPeerRuntime, hsyncInRuntime, hsyncOutRunti
 import { llmConfigRuntime, llmRuntime } from '../nodes/ai/llm.js';
 import { mcpOutputRuntime } from '../nodes/ai/mcp-output.js';
 import { mcpInputRuntime } from '../nodes/ai/mcp-input.js';
+import { toolInRuntime } from '../nodes/ai/custom-tool.js';
+import { toolOutRuntime } from '../nodes/ai/custom-out.js';
 
 // Browser nodes (delegate to browser via mainThread)
 import { cameraRuntime } from '../nodes/browser/camera.js';
@@ -181,6 +183,8 @@ import { audioStemsRuntime } from '../nodes/audio/stems.js';
   llmRuntime,
   mcpOutputRuntime,
   mcpInputRuntime,
+  toolInRuntime,
+  toolOutRuntime,
 
   // Audio (delegate to browser via mainThread)
   audioOscillatorRuntime,

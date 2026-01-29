@@ -86,6 +86,8 @@ import { imageAiConfigRuntime, imageAiRuntime } from './ai/image-ai.js';
 import { llmConfigRuntime, llmRuntime } from './ai/llm.js';
 import { mcpOutputRuntime } from './ai/mcp-output.js';
 import { mcpInputRuntime } from './ai/mcp-input.js';
+import { toolInRuntime } from './ai/custom-tool.js';
+import { toolOutRuntime } from './ai/custom-out.js';
 
 // Output nodes
 import { canvasConfigRuntime, canvasRuntime } from './output/canvas.js';
@@ -197,6 +199,8 @@ import { audioStemsRuntime } from './audio/stems.js';
   llmRuntime,
   mcpOutputRuntime,
   mcpInputRuntime,
+  toolInRuntime,
+  toolOutRuntime,
 
   // Output
   canvasRuntime,
