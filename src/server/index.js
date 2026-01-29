@@ -67,7 +67,7 @@ export function isReservedPath(urlPath) {
 // Create Fastify instance
 const fastify = Fastify({
   logger: {
-    level: 'info',
+    level: 'warn',
     transport: {
       target: 'pino-pretty',
       options: {

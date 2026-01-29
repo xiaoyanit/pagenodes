@@ -21,7 +21,6 @@ export function RuntimeProvider({ children }) {
   const [isRunning, setIsRunning] = useState(false);
   const [nodeStatuses, setNodeStatuses] = useState({});
   const [mcpStatus, setMcpStatus] = useState('disabled'); // disabled, connecting, connected, error
-  const mcpMessagesRef = useRef([]); // Queue for mcp-output node messages
   const [hasCanvasNodes, setHasCanvasNodes] = useState(false);
   const { addMessage, addDownload, addError, clear, clearErrors, messages, errors } = useDebug();
   const { state: flowState, dispatch: flowDispatch } = useFlows();
@@ -155,19 +154,6 @@ export function RuntimeProvider({ children }) {
         return;
       }
 
-      // Handle MCP message queue action
-      if (action === 'mcpQueueMessage') {
-        mcpMessagesRef.current.push(params);
-        // Keep queue from growing unbounded (max 1000 messages)
-        if (mcpMessagesRef.current.length > 1000) {
-          mcpMessagesRef.current = mcpMessagesRef.current.slice(-1000);
-        }
-        // Update status on the node with new count
-        const count = mcpMessagesRef.current.filter(m => m.nodeId === nodeId).length;
-        peerRef.current.methods.emitEvent(nodeId, 'queueUpdate', { count });
-        return;
-      }
-
       const nodeDef = nodeRegistry.get(nodeType);
       if (!nodeDef?.mainThread?.[action]) {
         logger.warn(`No mainThread handler for ${nodeType}.${action}`);
@@ -187,11 +173,6 @@ export function RuntimeProvider({ children }) {
       // Route audio actions to AudioManager
       if (audioActions.has(action)) {
         return await audioManager.handleMainThreadCall(nodeId, action, params);
-      }
-
-      // Handle MCP queue count query
-      if (action === 'mcpGetQueueCount') {
-        return mcpMessagesRef.current.filter(m => m.nodeId === params.nodeId).length;
       }
 
       const nodeDef = nodeRegistry.get(nodeType);
@@ -775,28 +756,9 @@ export function RuntimeProvider({ children }) {
       return nodeStatusesRef.current;
     });
 
-    peerRef.current.addHandler('mcpGetMessages', (limit = 100, clear = true) => {
-      const messages = mcpMessagesRef.current.slice(0, limit);
-      if (clear && messages.length > 0) {
-        // Remove returned messages from queue
-        mcpMessagesRef.current = mcpMessagesRef.current.slice(messages.length);
-
-        // Notify mcp-output nodes that queue was cleared
-        // Group remaining messages by nodeId to get counts
-        const remainingByNode = {};
-        for (const msg of mcpMessagesRef.current) {
-          remainingByNode[msg.nodeId] = (remainingByNode[msg.nodeId] || 0) + 1;
-        }
-
-        // Find all mcp-output nodes and update their status
-        const state = flowStateRef.current;
-        const mcpOutputNodes = Object.values(state.nodes).filter(n => n.type === 'mcp-output');
-        for (const node of mcpOutputNodes) {
-          const count = remainingByNode[node.id] || 0;
-          peerRef.current.methods.emitEvent(node.id, 'queueUpdate', { count });
-        }
-      }
-      return messages;
+    peerRef.current.addHandler('mcpGetMessages', async (limit = 100, clear = true) => {
+      // Forward to worker where the queue lives
+      return await peerRef.current.methods.getMcpMessages(limit, clear);
     });
 
     peerRef.current.addHandler('mcpSendMessage', (payload, topic = '') => {

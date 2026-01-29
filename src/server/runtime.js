@@ -106,6 +106,24 @@ const MAX_BUFFER_SIZE = 200;
 const mcpMessageQueue = [];
 
 /**
+ * Update status on all mcp-output nodes with their queue counts
+ */
+function updateMcpOutputNodeStatuses() {
+  // Count messages per node
+  const countByNode = {};
+  for (const msg of mcpMessageQueue) {
+    countByNode[msg.nodeId] = (countByNode[msg.nodeId] || 0) + 1;
+  }
+  // Update each mcp-output node
+  for (const node of nodes.values()) {
+    if (node.type === 'mcp-output') {
+      const count = countByNode[node.id] || 0;
+      node.emit('queueUpdate', { count });
+    }
+  }
+}
+
+/**
  * Route an error to catch nodes
  * Returns true if a catch node handled the error
  */
@@ -380,6 +398,14 @@ class RuntimeNode {
    * In server mode, this delegates to connected browser
    */
   mainThread(action, params = {}) {
+    // Handle MCP queue action directly in server mode
+    if (action === 'mcpQueueMessage') {
+      mcpMessageQueue.push(params);
+      if (mcpMessageQueue.length > MAX_BUFFER_SIZE) mcpMessageQueue.shift();
+      updateMcpOutputNodeStatuses();
+      return;
+    }
+
     // In headless server mode, we notify the browser to handle mainThread operations
     notifyAllBrowsers('mainThreadRequest', {
       nodeId: this.id,
@@ -391,11 +417,19 @@ class RuntimeNode {
 
   /**
    * Request main thread (browser) to execute an action and return result
-   * In server mode, this is more complex - needs to call browser and wait for response
+   * In server mode, we handle certain actions directly since there's no worker/main split
    */
-  async mainThreadCall(action, _params = {}) {
-    // For now, throw an error - browser delegation for sync calls needs more work
-    throw new Error('mainThreadCall not yet implemented in server mode');
+  async mainThreadCall(action, params = {}) {
+    // Handle actions that can be resolved in server mode
+    switch (action) {
+      case 'mcpGetQueueCount':
+        // Count messages for this node in the queue
+        return mcpMessageQueue.filter(m => m.nodeId === params.nodeId).length;
+      default:
+        // For other actions, we'd need browser delegation
+        PN.warn(`mainThreadCall action "${action}" not implemented in server mode`);
+        return null;
+    }
   }
 
   on(event, callback) {
@@ -1450,17 +1484,7 @@ function connectMcp(options, _callerPeer) {
         const messages = mcpMessageQueue.slice(0, limit);
         if (clear && messages.length > 0) {
           mcpMessageQueue.splice(0, messages.length);
-          // Update mcp-output node statuses
-          const remainingByNode = {};
-          for (const msg of mcpMessageQueue) {
-            remainingByNode[msg.nodeId] = (remainingByNode[msg.nodeId] || 0) + 1;
-          }
-          for (const node of nodes.values()) {
-            if (node.type === 'mcp-output') {
-              const count = remainingByNode[node.id] || 0;
-              node.emit('queueUpdate', { count });
-            }
-          }
+          updateMcpOutputNodeStatuses();
         }
         return messages;
       });

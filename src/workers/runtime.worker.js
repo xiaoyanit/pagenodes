@@ -46,6 +46,10 @@ const previousConfigStates = new Map();
 // Catch nodes for error routing
 let catchNodes = [];
 
+// MCP message queue (for mcp-output nodes)
+const mcpMessageQueue = [];
+const MAX_MCP_QUEUE_SIZE = 1000;
+
 /**
  * Route an error to catch nodes
  * Returns true if a catch node handled the error
@@ -339,6 +343,12 @@ class RuntimeNode {
    * @param {object} params - Parameters for the action
    */
   mainThread(action, params = {}) {
+    // Handle MCP queue actions directly in worker - no main thread round-trip
+    if (action === 'mcpQueueMessage') {
+      queueMcpMessage(params);
+      return;
+    }
+
     peer.notifiers.mainThreadRequest({
       nodeId: this.id,
       nodeType: this.type,
@@ -348,12 +358,33 @@ class RuntimeNode {
   }
 
   /**
+   * Queue an MCP message (for mcp-output nodes)
+   * @param {object} msg - Message to queue
+   */
+  mcpQueue(msg) {
+    queueMcpMessage(msg);
+  }
+
+  /**
+   * Get MCP queue count for this node
+   * @returns {number} Number of messages in queue for this node
+   */
+  mcpQueueCount() {
+    return getMcpQueueCount(this.id);
+  }
+
+  /**
    * Request main thread to execute an action and return result
    * @param {string} action - Action name
    * @param {object} params - Parameters for the action
    * @returns {Promise<any>} Result from main thread
    */
   async mainThreadCall(action, params = {}) {
+    // Handle MCP queue actions directly in worker - no main thread round-trip
+    if (action === 'mcpGetQueueCount') {
+      return getMcpQueueCount(params.nodeId || this.id);
+    }
+
     return await peer.methods.mainThreadCall({
       nodeId: this.id,
       nodeType: this.type,
@@ -740,6 +771,43 @@ function getMcpStatus() {
   return mcpCurrentStatus;
 }
 
+/**
+ * Queue an MCP message (called by mcp-output nodes)
+ */
+function queueMcpMessage(msg) {
+  mcpMessageQueue.push(msg);
+  if (mcpMessageQueue.length > MAX_MCP_QUEUE_SIZE) {
+    mcpMessageQueue.shift();
+  }
+  // Update the node's status with new count
+  updateMcpOutputNodeStatuses();
+}
+
+/**
+ * Get MCP queue count for a specific node
+ */
+function getMcpQueueCount(nodeId) {
+  return mcpMessageQueue.filter(m => m.nodeId === nodeId).length;
+}
+
+/**
+ * Update status on all mcp-output nodes with their queue counts
+ */
+function updateMcpOutputNodeStatuses() {
+  // Count messages per node
+  const countByNode = {};
+  for (const msg of mcpMessageQueue) {
+    countByNode[msg.nodeId] = (countByNode[msg.nodeId] || 0) + 1;
+  }
+  // Update each mcp-output node
+  for (const node of nodes.values()) {
+    if (node.type === 'mcp-output') {
+      const count = countByNode[node.id] || 0;
+      node.emit('queueUpdate', { count });
+    }
+  }
+}
+
 // MCP WebSocket connection
 let mcpSocket = null;
 let mcpPeer = null;
@@ -885,8 +953,15 @@ function connectMcp(options) {
         return await peer.methods.mcpGetNodeDetails(type);
       });
 
-      mcpPeer.addHandler('getMessages', async (limit, clear) => {
-        return await peer.methods.mcpGetMessages(limit, clear);
+      mcpPeer.addHandler('getMessages', (limit = 100, clear = true) => {
+        // Read directly from worker queue - no main thread round-trip
+        const messages = mcpMessageQueue.slice(0, limit);
+        if (clear && messages.length > 0) {
+          mcpMessageQueue.splice(0, messages.length);
+          // Update mcp-output node statuses
+          updateMcpOutputNodeStatuses();
+        }
+        return { messages, remaining: mcpMessageQueue.length };
       });
 
       mcpPeer.addHandler('sendMessage', async (payload, topic) => {
@@ -1036,6 +1111,15 @@ peer.addHandler('broadcastToType', broadcastToType);
 peer.addHandler('connectMcp', connectMcp);
 peer.addHandler('disconnectMcp', disconnectMcp);
 peer.addHandler('getMcpStatus', getMcpStatus);
+peer.addHandler('getMcpMessages', (limit = 100, clear = true) => {
+  // Read directly from worker queue
+  const messages = mcpMessageQueue.slice(0, limit);
+  if (clear && messages.length > 0) {
+    mcpMessageQueue.splice(0, messages.length);
+    updateMcpOutputNodeStatuses();
+  }
+  return { messages, remaining: mcpMessageQueue.length };
+});
 
 // Notify main thread that worker is ready
 peer.notifiers.ready();
