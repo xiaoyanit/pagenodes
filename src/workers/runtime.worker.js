@@ -1,10 +1,10 @@
 /**
  * PageNodes 2 Runtime Worker
  *
- * Node structure:
+ * Node structure (flat):
  * {
- *   _node: { id, type, name, z, x, y, wires },  // reserved props
- *   ...config  // custom config at top level
+ *   id, type, name, z, x, y, wires,  // reserved system props
+ *   ...config  // custom config at same level
  * }
  */
 
@@ -45,6 +45,10 @@ const previousConfigStates = new Map();
 
 // Catch nodes for error routing
 let catchNodes = [];
+
+// MCP message queue (for mcp-output nodes)
+const mcpMessageQueue = [];
+const MAX_MCP_QUEUE_SIZE = 1000;
 
 /**
  * Route an error to catch nodes
@@ -132,17 +136,21 @@ function handleError(sourceNode, errorText, originalMsg, errorObj) {
  * Ignores cosmetic properties like name, position.
  * Returns true if configs are equivalent (no reconnection needed).
  */
+const RESERVED_PROPS = new Set(['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'streamWires']);
+
 function configsEqual(prevNode, newNode) {
   if (!prevNode || !newNode) return false;
-  if (prevNode._node.type !== newNode._node.type) return false;
+  if (prevNode.type !== newNode.type) return false;
 
-  // Get config properties (everything except _node)
-  const prevConfig = { ...prevNode };
-  const newConfig = { ...newNode };
-  delete prevConfig._node;
-  delete newConfig._node;
+  const prevConfig = {};
+  const newConfig = {};
+  for (const key of Object.keys(prevNode)) {
+    if (!RESERVED_PROPS.has(key)) prevConfig[key] = prevNode[key];
+  }
+  for (const key of Object.keys(newNode)) {
+    if (!RESERVED_PROPS.has(key)) newConfig[key] = newNode[key];
+  }
 
-  // Compare serialized config (handles nested objects)
   return JSON.stringify(prevConfig) === JSON.stringify(newConfig);
 }
 
@@ -150,13 +158,7 @@ function configsEqual(prevNode, newNode) {
  * Store config node state for future comparison
  */
 function storeConfigState(configNode) {
-  previousConfigStates.set(configNode._node.id, {
-    _node: {
-      id: configNode._node.id,
-      type: configNode._node.type
-    },
-    ...configNode
-  });
+  previousConfigStates.set(configNode.id, { ...configNode });
 }
 
 /**
@@ -164,16 +166,17 @@ function storeConfigState(configNode) {
  */
 class RuntimeNode {
   constructor(nodeDef, runtimeDef) {
-    // Reserved props from _node
-    this.id = nodeDef._node.id;
-    this.type = nodeDef._node.type;
-    this.name = nodeDef._node.name || '';
-    this.z = nodeDef._node.z;
-    this.wires = nodeDef._node.wires || [];
+    this.id = nodeDef.id;
+    this.type = nodeDef.type;
+    this.name = nodeDef.name || '';
+    this.z = nodeDef.z;
+    this.wires = nodeDef.wires || [];
 
-    // Config props from top level
-    this.config = { ...nodeDef };
-    delete this.config._node;
+    // Extract config (everything except reserved system props)
+    this.config = {};
+    for (const key of Object.keys(nodeDef)) {
+      if (!RESERVED_PROPS.has(key)) this.config[key] = nodeDef[key];
+    }
 
     this._closeCallbacks = [];
     this._eventListeners = new Map();
@@ -340,6 +343,12 @@ class RuntimeNode {
    * @param {object} params - Parameters for the action
    */
   mainThread(action, params = {}) {
+    // Handle MCP queue actions directly in worker - no main thread round-trip
+    if (action === 'mcpQueueMessage') {
+      queueMcpMessage(params);
+      return;
+    }
+
     peer.notifiers.mainThreadRequest({
       nodeId: this.id,
       nodeType: this.type,
@@ -349,12 +358,33 @@ class RuntimeNode {
   }
 
   /**
+   * Queue an MCP message (for mcp-output nodes)
+   * @param {object} msg - Message to queue
+   */
+  mcpQueue(msg) {
+    queueMcpMessage(msg);
+  }
+
+  /**
+   * Get MCP queue count for this node
+   * @returns {number} Number of messages in queue for this node
+   */
+  mcpQueueCount() {
+    return getMcpQueueCount(this.id);
+  }
+
+  /**
    * Request main thread to execute an action and return result
    * @param {string} action - Action name
    * @param {object} params - Parameters for the action
    * @returns {Promise<any>} Result from main thread
    */
   async mainThreadCall(action, params = {}) {
+    // Handle MCP queue actions directly in worker - no main thread round-trip
+    if (action === 'mcpGetQueueCount') {
+      return getMcpQueueCount(params.nodeId || this.id);
+    }
+
     return await peer.methods.mainThreadCall({
       nodeId: this.id,
       nodeType: this.type,
@@ -413,10 +443,10 @@ class RuntimeNode {
  * Create a node instance from definition
  */
 function createNode(nodeDef) {
-  const runtimeDef = runtimeRegistry.get(nodeDef._node.type);
+  const runtimeDef = runtimeRegistry.get(nodeDef.type);
 
   if (!runtimeDef) {
-    PN.warn(`Unknown node type: ${nodeDef._node.type}`);
+    PN.warn(`Unknown node type: ${nodeDef.type}`);
     return new RuntimeNode(nodeDef, null);
   }
 
@@ -433,15 +463,15 @@ async function deployFlows(flowNodes, flowConfigNodes = [], skipNodeIds = []) {
 
   // Track which config nodes are unchanged (don't need reinit)
   const unchangedConfigIds = new Set();
-  const incomingConfigIds = new Set(flowConfigNodes.map(c => c._node.id));
+  const incomingConfigIds = new Set(flowConfigNodes.map(c => c.id));
 
   // Determine which config nodes have changed
   for (const configNode of flowConfigNodes) {
-    const prevState = previousConfigStates.get(configNode._node.id);
+    const prevState = previousConfigStates.get(configNode.id);
     if (prevState && configsEqual(prevState, configNode)) {
       // Config unchanged - keep existing instance
-      unchangedConfigIds.add(configNode._node.id);
-      PN.log(`[deploy] Config node ${configNode._node.id} (${configNode._node.type}) unchanged, keeping connection`);
+      unchangedConfigIds.add(configNode.id);
+      PN.log(`[deploy] Config node ${configNode.id} (${configNode.type}) unchanged, keeping connection`);
     }
   }
 
@@ -486,18 +516,13 @@ async function deployFlows(flowNodes, flowConfigNodes = [], skipNodeIds = []) {
   // Update configNodes map with new data
   configNodes.clear();
   for (const configNode of flowConfigNodes) {
-    configNodes.set(configNode._node.id, {
-      id: configNode._node.id,
-      type: configNode._node.type,
-      name: configNode._node.name,
-      ...configNode
-    });
+    configNodes.set(configNode.id, configNode);
   }
 
   // Create and init NEW or CHANGED config node instances (skip unchanged and error nodes)
   for (const configNode of flowConfigNodes) {
-    if (errorNodeIds.has(configNode._node.id)) continue;
-    if (unchangedConfigIds.has(configNode._node.id)) {
+    if (errorNodeIds.has(configNode.id)) continue;
+    if (unchangedConfigIds.has(configNode.id)) {
       // Store state for unchanged nodes too (in case props like name changed)
       storeConfigState(configNode);
       continue;
@@ -510,10 +535,10 @@ async function deployFlows(flowNodes, flowConfigNodes = [], skipNodeIds = []) {
 
   // Initialize NEW or CHANGED config nodes
   for (const configNode of flowConfigNodes) {
-    if (errorNodeIds.has(configNode._node.id)) continue;
-    if (unchangedConfigIds.has(configNode._node.id)) continue;
+    if (errorNodeIds.has(configNode.id)) continue;
+    if (unchangedConfigIds.has(configNode.id)) continue;
 
-    const node = nodes.get(configNode._node.id);
+    const node = nodes.get(configNode.id);
     if (node && node.onInit) {
       try {
         node.onInit();
@@ -525,7 +550,7 @@ async function deployFlows(flowNodes, flowConfigNodes = [], skipNodeIds = []) {
 
   // Create regular node instances (skip error nodes)
   for (const nodeDef of flowNodes) {
-    if (errorNodeIds.has(nodeDef._node.id)) continue;
+    if (errorNodeIds.has(nodeDef.id)) continue;
     const node = createNode(nodeDef);
     nodes.set(node.id, node);
   }
@@ -534,8 +559,8 @@ async function deployFlows(flowNodes, flowConfigNodes = [], skipNodeIds = []) {
   // Collect async onInit promises to await them all
   const initPromises = [];
   for (const nodeDef of flowNodes) {
-    if (errorNodeIds.has(nodeDef._node.id)) continue;
-    const node = nodes.get(nodeDef._node.id);
+    if (errorNodeIds.has(nodeDef.id)) continue;
+    const node = nodes.get(nodeDef.id);
     if (node && node.onInit) {
       try {
         const result = node.onInit();
@@ -746,6 +771,43 @@ function getMcpStatus() {
   return mcpCurrentStatus;
 }
 
+/**
+ * Queue an MCP message (called by mcp-output nodes)
+ */
+function queueMcpMessage(msg) {
+  mcpMessageQueue.push(msg);
+  if (mcpMessageQueue.length > MAX_MCP_QUEUE_SIZE) {
+    mcpMessageQueue.shift();
+  }
+  // Update the node's status with new count
+  updateMcpOutputNodeStatuses();
+}
+
+/**
+ * Get MCP queue count for a specific node
+ */
+function getMcpQueueCount(nodeId) {
+  return mcpMessageQueue.filter(m => m.nodeId === nodeId).length;
+}
+
+/**
+ * Update status on all mcp-output nodes with their queue counts
+ */
+function updateMcpOutputNodeStatuses() {
+  // Count messages per node
+  const countByNode = {};
+  for (const msg of mcpMessageQueue) {
+    countByNode[msg.nodeId] = (countByNode[msg.nodeId] || 0) + 1;
+  }
+  // Update each mcp-output node
+  for (const node of nodes.values()) {
+    if (node.type === 'mcp-output') {
+      const count = countByNode[node.id] || 0;
+      node.emit('queueUpdate', { count });
+    }
+  }
+}
+
 // MCP WebSocket connection
 let mcpSocket = null;
 let mcpPeer = null;
@@ -891,12 +953,61 @@ function connectMcp(options) {
         return await peer.methods.mcpGetNodeDetails(type);
       });
 
-      mcpPeer.addHandler('getMessages', async (limit, clear) => {
-        return await peer.methods.mcpGetMessages(limit, clear);
+      mcpPeer.addHandler('getMessages', (limit = 100, clear = true) => {
+        // Read directly from worker queue - no main thread round-trip
+        const messages = mcpMessageQueue.slice(0, limit);
+        if (clear && messages.length > 0) {
+          mcpMessageQueue.splice(0, messages.length);
+          // Update mcp-output node statuses
+          updateMcpOutputNodeStatuses();
+        }
+        return { messages, remaining: mcpMessageQueue.length };
       });
 
       mcpPeer.addHandler('sendMessage', async (payload, topic) => {
         return await peer.methods.mcpSendMessage(payload, topic);
+      });
+
+      // Custom tools handlers
+      mcpPeer.addHandler('getCustomTools', () => {
+        const tools = [];
+        if (globalThis._customTools) {
+          for (const [name, tool] of globalThis._customTools) {
+            tools.push({
+              name,
+              description: tool.description
+            });
+          }
+        }
+        return { tools };
+      });
+
+      mcpPeer.addHandler('useCustomTool', (name, message) => {
+        return new Promise((resolve, reject) => {
+          const tool = globalThis._customTools?.get(name);
+          if (!tool) {
+            resolve({ error: `Custom tool "${name}" not found` });
+            return;
+          }
+
+          // Generate a unique request ID
+          const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+          // Set up timeout (30 seconds)
+          const timeout = setTimeout(() => {
+            globalThis._customToolRequests?.delete(requestId);
+            resolve({ error: `Tool "${name}" timed out after 30 seconds` });
+          }, 30000);
+
+          // Store the pending request
+          if (!globalThis._customToolRequests) {
+            globalThis._customToolRequests = new Map();
+          }
+          globalThis._customToolRequests.set(requestId, { resolve, reject, timeout });
+
+          // Invoke the tool (triggers the flow with the message)
+          tool.node.invoke(message, requestId);
+        });
       });
 
       // Register this device with the MCP server (Ainura multi-device architecture)
@@ -1025,6 +1136,8 @@ PN = createWorkerLogger('worker', (entries) => {
   peer.notifiers.logs(entries);
 });
 
+PN.mode = 'browser';
+
 // Make PN available globally for node runtimes
 self.PN = PN;
 
@@ -1040,6 +1153,15 @@ peer.addHandler('broadcastToType', broadcastToType);
 peer.addHandler('connectMcp', connectMcp);
 peer.addHandler('disconnectMcp', disconnectMcp);
 peer.addHandler('getMcpStatus', getMcpStatus);
+peer.addHandler('getMcpMessages', (limit = 100, clear = true) => {
+  // Read directly from worker queue
+  const messages = mcpMessageQueue.slice(0, limit);
+  if (clear && messages.length > 0) {
+    mcpMessageQueue.splice(0, messages.length);
+    updateMcpOutputNodeStatuses();
+  }
+  return { messages, remaining: mcpMessageQueue.length };
+});
 
 // Notify main thread that worker is ready
 peer.notifiers.ready();

@@ -77,6 +77,7 @@ import { xmlNode } from './parsers/xml.jsx';
 
 // IO nodes
 import { httpRequestNode } from './io/http.jsx';
+import { httpInNode, httpResponseNode } from './io/http-in.jsx';
 import { joinNode } from './io/join.jsx';
 import { splitNode } from './io/split.jsx';
 import { linkInNode, linkOutNode, linkCallNode } from './io/link.jsx';
@@ -111,6 +112,8 @@ import { imageAiConfigNode, imageAiNode } from './ai/image-ai.jsx';
 import { llmConfigNode, llmNode } from './ai/llm.jsx';
 import { mcpOutputNode } from './ai/mcp-output.jsx';
 import { mcpInputNode } from './ai/mcp-input.jsx';
+import { toolInNode } from './ai/custom-tool.jsx';
+import { toolOutNode } from './ai/custom-out.jsx';
 
 // Output nodes
 import { canvasConfigNode, canvasNode } from './output/canvas.jsx';
@@ -168,6 +171,8 @@ import { audioStemsNode } from './audio/stems.jsx';
 
   // IO/Network
   httpRequestNode,
+  httpInNode,
+  httpResponseNode,
   joinNode,
   splitNode,
   linkInNode,
@@ -221,6 +226,8 @@ import { audioStemsNode } from './audio/stems.jsx';
   llmNode,
   mcpOutputNode,
   mcpInputNode,
+  toolInNode,
+  toolOutNode,
 
   // Output
   canvasNode,
