@@ -27,7 +27,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Parse command line arguments
 const { values: args } = parseArgs({
   options: {
-    port: { type: 'string', short: 'p', default: '1880' },
+    port: { type: 'string', short: 'p', default: '2880' },
     host: { type: 'string', short: 'h', default: '0.0.0.0' },
     flows: { type: 'string', short: 'f' },
     'no-ui': { type: 'boolean', default: false },
@@ -45,7 +45,7 @@ Usage:
   node src/server/index.js [options]
 
 Options:
-  -p, --port <port>    Port to listen on (default: 1880)
+  -p, --port <port>    Port to listen on (default: 2880)
   -h, --host <host>    Host to bind to (default: 0.0.0.0)
   -f, --flows <file>   Flow file to load on startup
   --no-ui              Disable serving the editor UI
